@@ -28,7 +28,7 @@ Strict layering. New code goes to one of:
 
 - `server/routes/` — HTTP endpoints. Thin. Parse request, call services, return response. No business logic.
 - `server/services/` — business logic. All of it. Functions take typed inputs, return typed outputs. Side effects happen here, explicitly, in linear sequence.
-- `server/utils/` — pure helpers. No I/O, no DB, no side effects. (Existing `utils/notifications.py` violates this — see legacy debt.)
+- `server/utils/` — pure helpers. No I/O, no DB, no side effects. (`utils/notifications.py` holds side-effect helpers that are called explicitly from the route; not pure, but no longer hidden behind listeners — see layering note in legacy debt.)
 - `server/models.py` — SQLAlchemy models only.
 - `client/src/views/` — page-level Vue components.
 - `client/src/components/` — reusable Vue components.
@@ -40,7 +40,7 @@ If you can't place new code into one of these, the rule needs a new line — fla
 ## Style rules
 
 - **Side effects are explicit.** Functional core, imperative shell. Handler functions in `routes/` are the imperative shell — they call services in a visible, linear sequence. Services are pure where possible; when not pure, the impurity is in the function's name (`store_event`, `broadcast_event`).
-- **No SQLAlchemy event listeners.** Do not use `@event.listens_for`. Side effects belong at the call site, not in invisible registrations. (The existing listeners in `utils/notifications.py` are legacy debt slated for removal.)
+- **No SQLAlchemy event listeners.** Do not use `@event.listens_for`. Side effects belong at the call site, not in invisible registrations.
 - **Type hints on every function.** No `Any` unless you can justify it in one sentence. Use `Event`, `Session`, etc. — not `dict`.
 - **Naming**: `event` for an event row everywhere (never `evt`, `e`, `raw`, `data`, `tn`). `session_id`, `machine_id`, `tool_name` for those fields. Match domain terms exactly.
 - **No bare `except:`.** Catch the specific exception. Log it (when logging exists). Never `except: pass`.
@@ -64,8 +64,8 @@ If you can't place new code into one of these, the rule needs a new line — fla
 
 The baseline tag (`tag-0-baseline`) has known violations of the rules above:
 
-- **`utils/notifications.py`** uses SQLAlchemy event listeners for WebSocket broadcast and session-summary updates. This violates "side effects explicit". Slated for refactor: move side effects into the route handler call site. The cascading-listener pattern is also the source of a silent `AttributeError` on session-boundary events.
-- **`utils/parse.py`** contains `process_incoming_event` — an ~80-line function mixing parse + normalize + persist + side-effects, no types, inconsistent naming (`raw` / `data` / `e` / `evt` for the same shape). Needs decomposition + type hints.
+- **`utils/parse.py`** still uses inconsistent internal naming (`raw` / `data` / `e` / `evt` for the same shape) and missing type hints inside `parse_event`. The orchestration was split into `parse_event` + `store_event` in tag-8, but the body needs a cleanup pass.
+- **`utils/notifications.py`** holds side-effect functions (`broadcast_event`, `update_session_summary`, `record_metric`). They're now called explicitly from the route, but per layering they belong in `services/` rather than `utils/`. Move on next touch.
 - **`helpers/timefmt.py`** lives outside `utils/` for no reason. New helpers go to `utils/`; merge `helpers/` into `utils/` when convenient.
 - **`routes/stats.py`** puts query logic inline instead of going through `services/`. Move on next touch.
 - **Bare `except: pass`** blocks exist in `utils/parse.py`, `utils/notifications.py`, and `main.py` websocket loop. Replace with specific-exception + log when logging lands.

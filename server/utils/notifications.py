@@ -1,15 +1,14 @@
-"""misc notification helpers.
+"""Side-effect helpers called explicitly from the route handler.
 
-Legacy: SQLAlchemy event listeners drive websocket broadcast and the session
-summary update. Violates CLAUDE.md "side effects explicit"; slated for refactor
-in tag-8. tag-3 only adds logging at the swallowed exception paths and guards
-the `None` tool_name on session-boundary events.
+Post tag-8: these are bare functions, not SQLAlchemy event listeners. They run
+in linear order from the ingestion route after the event row has been
+committed, so `target.id` and `target.created_at` are populated.
 """
 import asyncio
 import json
 from datetime import datetime
 
-from sqlalchemy import event as sa_event
+from sqlalchemy.orm import Session
 
 from logging_config import get_logger
 from models import Event, SessionSummary
@@ -46,7 +45,7 @@ async def _send_to_all(msg: str):
         unregister_client(d)
 
 
-def _build_payload(evt):
+def _build_payload(evt: Event) -> dict[str, object]:
     # session-boundary events (SessionStart/SessionEnd) have no tool_name.
     tool = evt.tool_name.lower() if evt.tool_name else None
     return {
@@ -59,74 +58,72 @@ def _build_payload(evt):
     }
 
 
-@sa_event.listens_for(Event, "after_insert")
-def broadcast_to_websocket(mapper, connection, target):
+def broadcast_event(event: Event) -> None:
     try:
-        payload = _build_payload(target)
+        payload = _build_payload(event)
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(_send_to_all(json.dumps(payload)))
             log.info(
                 "broadcast.scheduled",
-                event_id=target.id,
-                event_type=target.event_type,
-                session_id=target.session_id,
-                machine_id=target.machine_id,
-                tool_name=target.tool_name,
+                event_id=event.id,
+                event_type=event.event_type,
+                session_id=event.session_id,
+                machine_id=event.machine_id,
+                tool_name=event.tool_name,
             )
         except RuntimeError:
             # no running loop in this thread (e.g. sync tests) — drop.
             log.debug(
                 "broadcast.no_loop",
-                event_id=target.id,
-                event_type=target.event_type,
+                event_id=event.id,
+                event_type=event.event_type,
             )
     except Exception:
         log.exception(
             "broadcast.failed",
-            event_id=getattr(target, "id", None),
-            event_type=getattr(target, "event_type", None),
+            event_id=getattr(event, "id", None),
+            event_type=getattr(event, "event_type", None),
         )
 
 
-@sa_event.listens_for(Event, "after_insert")
-def update_session_summary(mapper, connection, target):
-    # uses the same connection as the inserting transaction
+def update_session_summary(event: Event, db: Session) -> None:
     try:
         tbl = SessionSummary.__table__
-        existing = connection.execute(
-            tbl.select().where(tbl.c.session_id == target.session_id)
+        existing = db.execute(
+            tbl.select().where(tbl.c.session_id == event.session_id)
         ).first()
         if existing is None:
-            connection.execute(
+            db.execute(
                 tbl.insert().values(
-                    session_id=target.session_id,
-                    machine_id=target.machine_id,
+                    session_id=event.session_id,
+                    machine_id=event.machine_id,
                     event_count=1,
                     last_seen=datetime.utcnow(),
                 )
             )
         else:
-            connection.execute(
+            db.execute(
                 tbl.update()
-                .where(tbl.c.session_id == target.session_id)
+                .where(tbl.c.session_id == event.session_id)
                 .values(
                     event_count=(existing.event_count or 0) + 1,
                     last_seen=datetime.utcnow(),
                 )
             )
+        db.commit()
         log.info(
             "summary.updated",
-            session_id=target.session_id,
-            machine_id=target.machine_id,
+            session_id=event.session_id,
+            machine_id=event.machine_id,
         )
     except Exception:
+        db.rollback()
         log.exception(
             "summary.failed",
-            session_id=getattr(target, "session_id", None),
+            session_id=getattr(event, "session_id", None),
         )
 
 
-@sa_event.listens_for(Event, "after_insert")
-def record_metric(mapper, connection, target):
+def record_metric(event: Event) -> None:
     _metric_counter["events_total"] += 1

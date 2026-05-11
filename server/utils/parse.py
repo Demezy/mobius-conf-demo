@@ -1,14 +1,16 @@
 import json
 from datetime import datetime
 
+from sqlalchemy.orm import Session
+
 from logging_config import get_logger
 from models import Event
 
 log = get_logger("utils.parse")
 
 
-def process_incoming_event(raw, db=None):
-    # raw can be dict or json string or already-an-Event-like thing
+def parse_event(raw) -> Event:
+    """Normalize a raw payload (dict / json string) into an unsaved Event row."""
     if isinstance(raw, str):
         try:
             data = json.loads(raw)
@@ -80,7 +82,7 @@ def process_incoming_event(raw, db=None):
         if k in blob and isinstance(blob[k], str) and len(blob[k]) > 4000:
             blob[k] = blob[k][:4000] + "...[truncated]"
 
-    event_row = Event(
+    return Event(
         session_id=sid,
         machine_id=mid,
         event_type=e,
@@ -89,28 +91,28 @@ def process_incoming_event(raw, db=None):
         created_at=created,
     )
 
-    # if a db session was passed in, persist; otherwise just return the row
-    if db is not None:
-        try:
-            db.add(event_row)
-            db.commit()
-            db.refresh(event_row)
-            log.info(
-                "event.stored",
-                event_id=event_row.id,
-                event_type=event_row.event_type,
-                session_id=event_row.session_id,
-                machine_id=event_row.machine_id,
-                tool_name=event_row.tool_name,
-            )
-        except Exception as ex:
-            db.rollback()
-            log.exception(
-                "event.store_failed",
-                event_type=e,
-                session_id=sid,
-                machine_id=mid,
-            )
-            raise ex
 
-    return event_row
+def store_event(event: Event, db: Session) -> Event:
+    """Persist a parsed event row. Commits and refreshes so callers see the id."""
+    try:
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+        log.info(
+            "event.stored",
+            event_id=event.id,
+            event_type=event.event_type,
+            session_id=event.session_id,
+            machine_id=event.machine_id,
+            tool_name=event.tool_name,
+        )
+        return event
+    except Exception:
+        db.rollback()
+        log.exception(
+            "event.store_failed",
+            event_type=event.event_type,
+            session_id=event.session_id,
+            machine_id=event.machine_id,
+        )
+        raise

@@ -6,8 +6,6 @@ from logging_config import configure_logging, get_logger
 from middleware import RequestIdMiddleware
 from routes.events import router as events_router
 from routes.stats import router as stats_router
-# importing utils.notifications wires up the @event.listens_for handlers.
-# legacy debt: side effects belong at the call site — slated for tag-8.
 from utils import notifications
 
 configure_logging()

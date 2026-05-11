@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from db import get_db
 from logging_config import bind_request_context, get_logger
-from models import Event
-from utils.helpers import verify_token_value
-from utils.parse import process_incoming_event
 from services.feed import list_events
+from utils.helpers import verify_token_value
+from utils.notifications import broadcast_event, update_session_summary
+from utils.parse import parse_event, store_event
 
 router = APIRouter()
 log = get_logger("routes.events")
@@ -40,8 +41,13 @@ async def ingest(
         machine_id=machine_id,
     )
     log.debug("event.payload", payload=payload)
-    # use the parse helper to normalize+persist
-    event = process_incoming_event(payload, db=db)
+
+    # linear pipeline — every side effect named and visible at the call site.
+    event = parse_event(payload)
+    store_event(event, db)
+    broadcast_event(event)
+    update_session_summary(event, db)
+
     return {"ok": True, "id": event.id}
 
 
