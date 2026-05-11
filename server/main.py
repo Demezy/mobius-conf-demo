@@ -6,6 +6,7 @@ from logging_config import configure_logging, get_logger
 from middleware import RequestIdMiddleware
 from routes.events import router as events_router
 from routes.stats import router as stats_router
+from routes.triggers import router as triggers_router
 from utils import notifications
 
 configure_logging()
@@ -31,6 +32,7 @@ def _startup() -> None:
 
 app.include_router(events_router)
 app.include_router(stats_router)
+app.include_router(triggers_router)
 
 
 @app.get("/")

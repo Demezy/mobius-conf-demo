@@ -1,0 +1,52 @@
+name: agent-trigger
+
+on:
+  issues:
+    types: [labeled]
+
+# Only fire on the explicit "agent-go" label so the agent doesn't pick up
+# every issue. Maintainers add the label when they want the agent to try.
+jobs:
+  dispatch:
+    if: github.event.label.name == 'agent-go'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install Claude Code CLI
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Dispatch orchestrator
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          echo "$ISSUE_BODY" | uv run scripts/issue_to_agent.py --title "$ISSUE_TITLE"
+
+      - name: Open PR with agent output
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="agent/issue-${{ github.event.issue.number }}"
+          git config user.name "agent-bot"
+          git config user.email "agent-bot@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A
+          git diff --cached --quiet && echo "no changes from agent" && exit 0
+          git commit -m "agent: address #${{ github.event.issue.number }}"
+          git push origin "$branch"
+          gh pr create \
+            --title "agent: ${{ github.event.issue.title }}" \
+            --body "Closes #${{ github.event.issue.number }}." \
+            --base main \
+            --head "$branch"
