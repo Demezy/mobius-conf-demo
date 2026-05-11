@@ -3,7 +3,10 @@ import json
 
 from sqlalchemy import desc
 
+from logging_config import get_logger
 from models import Event
+
+log = get_logger("services.feed")
 
 
 def list_events(db, session_id=None, machine_id=None, limit=200):
@@ -18,7 +21,8 @@ def list_events(db, session_id=None, machine_id=None, limit=200):
     for r in rows:
         try:
             blob = json.loads(r.payload) if r.payload else {}
-        except:
+        except json.JSONDecodeError:
+            log.warning("feed.bad_payload_json", event_id=r.id)
             blob = {}
         out.append({
             "id": r.id,

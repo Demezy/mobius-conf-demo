@@ -1,7 +1,10 @@
 import json
 from datetime import datetime
 
+from logging_config import get_logger
 from models import Event
+
+log = get_logger("utils.parse")
 
 
 def process_incoming_event(raw, db=None):
@@ -9,7 +12,8 @@ def process_incoming_event(raw, db=None):
     if isinstance(raw, str):
         try:
             data = json.loads(raw)
-        except:
+        except json.JSONDecodeError:
+            log.warning("parse.invalid_json", raw_len=len(raw))
             data = {}
     elif isinstance(raw, dict):
         data = raw
@@ -64,7 +68,8 @@ def process_incoming_event(raw, db=None):
                 created = datetime.utcfromtimestamp(ts)
             else:
                 created = datetime.fromisoformat(str(ts).replace("Z", ""))
-        except:
+        except (ValueError, TypeError):
+            log.warning("parse.bad_timestamp", ts=str(ts))
             created = datetime.utcnow()
     else:
         created = datetime.utcnow()
@@ -90,8 +95,22 @@ def process_incoming_event(raw, db=None):
             db.add(event_row)
             db.commit()
             db.refresh(event_row)
+            log.info(
+                "event.stored",
+                event_id=event_row.id,
+                event_type=event_row.event_type,
+                session_id=event_row.session_id,
+                machine_id=event_row.machine_id,
+                tool_name=event_row.tool_name,
+            )
         except Exception as ex:
             db.rollback()
+            log.exception(
+                "event.store_failed",
+                event_type=e,
+                session_id=sid,
+                machine_id=mid,
+            )
             raise ex
 
     return event_row
